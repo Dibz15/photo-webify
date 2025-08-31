@@ -2,6 +2,8 @@
 
 [![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://photo-webify.streamlit.app)
 
+![Example screenshot of photo-webify in use](docs/example.webp)
+
 A minimal Streamlit app for turning high-resolution photos into web-ready versions.  
 It resizes, compresses, converts formats (JPEG/WebP), and optionally applies a watermark.  
 Supports single or multiple files, or a ZIP archive in/out, with a live preview.
