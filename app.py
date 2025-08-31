@@ -1,3 +1,4 @@
+import gc
 import io
 import zipfile
 from datetime import datetime
@@ -10,37 +11,39 @@ from PIL import Image, ImageOps, ImageCms, ImageEnhance
 # Helpers
 # -------------------------------
 
-def read_uploaded_images(uploaded_files) -> List[Tuple[str, Image.Image]]:
+def read_uploaded_images(uploaded_files):
     images = []
     if not uploaded_files:
         return images
 
     for uf in uploaded_files:
         name = getattr(uf, "name", "upload")
-        if name.lower().endswith(".zip"):
-            data = uf.read()
-            with zipfile.ZipFile(io.BytesIO(data)) as zf:
-                for info in zf.infolist():
-                    if info.is_dir():
-                        continue
-                    fname = info.filename
-                    if not fname.lower().endswith((".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff")):
-                        continue
-                    with zf.open(info) as f:
-                        try:
-                            im = Image.open(io.BytesIO(f.read()))
-                            im = ImageOps.exif_transpose(im)
-                            images.append((fname, im))
-                        except Exception:
+        try:
+            if name.lower().endswith(".zip"):
+                raw = uf.read()
+                uf.close()  # release any temp file
+                with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+                    for info in zf.infolist():
+                        if info.is_dir():
                             continue
-        else:
-            try:
-                im = Image.open(uf)
+                        lower = info.filename.lower()
+                        if not lower.endswith((".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff")):
+                            continue
+                        with zf.open(info) as f:
+                            data = f.read()
+                        im = Image.open(io.BytesIO(data))
+                        im = ImageOps.exif_transpose(im)
+                        images.append((info.filename, im))
+            else:
+                data = uf.read()
+                uf.close()
+                im = Image.open(io.BytesIO(data))
                 im = ImageOps.exif_transpose(im)
                 images.append((name, im))
-            except Exception:
-                continue
+        except Exception:
+            continue
     return images
+
 
 
 def ensure_rgb_and_srgb(img: Image.Image, convert_to_srgb: bool = True) -> Image.Image:
@@ -262,6 +265,17 @@ with st.sidebar:
 
     st.subheader("Filenames")
     suffix = st.text_input("Output suffix", value="_web")
+
+    if st.button("Purge session now"):
+        for k in list(st.session_state.keys()):
+            st.session_state.pop(k, None)
+        # Drop local references commonly used in this script
+        try:
+            images.clear()
+        except Exception:
+            pass
+        gc.collect()
+        st.success("Session memory purged.")
 
 # Load inputs
 images = read_uploaded_images(uploads)
