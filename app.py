@@ -77,17 +77,21 @@ def apply_watermark(base: Image.Image,
                     position: str = "bottom-right",
                     scale_pct: float = 10.0,
                     opacity_pct: float = 70.0,
-                    margin_px: int = 24) -> Image.Image:
+                    margin_px: int = 24,
+                    recolor: str = "none") -> Image.Image:
     if watermark is None:
         return base
 
     base = base.convert("RGBA")
     wm = watermark.convert("RGBA")
 
+    # Optional recolor before scaling
+    wm = recolor_watermark(wm, recolor)
+
     # Scale watermark based on base width
-    target_w = max(1, int(base.width * (scale_pct / 100.0)))
-    scale = target_w / wm.width
-    wm = wm.resize((target_w, max(1, int(wm.height * scale))), Image.LANCZOS)
+    target_w = max(1, int(round(base.width * (scale_pct / 100.0))))
+    scale = target_w / max(1, wm.width)
+    wm = wm.resize((target_w, max(1, int(round(wm.height * scale)))), Image.LANCZOS)
 
     # Apply opacity
     if 0 <= opacity_pct < 100:
@@ -95,7 +99,7 @@ def apply_watermark(base: Image.Image,
         alpha = ImageEnhance.Brightness(alpha).enhance(opacity_pct / 100.0)
         wm.putalpha(alpha)
 
-    # Compute position
+    # Compute raw position
     positions = {
         "top-left": (margin_px, margin_px),
         "top-right": (base.width - wm.width - margin_px, margin_px),
@@ -103,10 +107,16 @@ def apply_watermark(base: Image.Image,
         "bottom-right": (base.width - wm.width - margin_px, base.height - wm.height - margin_px),
         "center": ((base.width - wm.width) // 2, (base.height - wm.height) // 2),
     }
-    xy = positions.get(position, positions["bottom-right"])
+    x, y = positions.get(position, positions["bottom-right"])
+
+    # Clamp to keep the watermark fully inside the image
+    max_x = max(0, base.width - wm.width)
+    max_y = max(0, base.height - wm.height)
+    x = min(max(int(round(x)), 0), max_x)
+    y = min(max(int(round(y)), 0), max_y)
 
     out = base.copy()
-    out.alpha_composite(wm, dest=xy)
+    out.alpha_composite(wm, dest=(x, y))
     return out.convert("RGB")
 
 
@@ -155,20 +165,44 @@ def process_one(image: Image.Image,
                 wm_position: str,
                 wm_scale_pct: float,
                 wm_opacity_pct: float,
-                wm_margin_px: int) -> Image.Image:
+                wm_margin_px: int,
+                wm_recolor:str = "none") -> Image.Image:
     img = ensure_rgb_and_srgb(image, convert_to_srgb)
     img = resize_to_long_edge(img, target_long)
     if wm_img is not None:
-        img = apply_watermark(img, wm_img, wm_position, wm_scale_pct, wm_opacity_pct, wm_margin_px)
+        img = apply_watermark(img, wm_img, wm_position, wm_scale_pct, wm_opacity_pct, wm_margin_px, wm_recolor)
     # Nothing else here, saving happens separately to bytes for preview size
     return img
 
 
 def filename_with_suffix(name: str, suffix: str, ext: str) -> str:
-    base = name.replace("\\", "/").split("/")[-1]
+    base = (name or "output").replace("\\", "/").split("/")[-1]
     if "." in base:
         base = base[:base.rfind(".")]
+    if not base:
+        base = "output"
     return f"{base}{suffix}.{ext.lower()}"
+
+def recolor_watermark(wm: Image.Image, mode: str) -> Image.Image:
+    """Recolor watermark RGB while preserving alpha.
+    mode: 'none', 'invert', 'white', 'black'
+    """
+    if wm is None:
+        return None
+    wm = wm.convert("RGBA")
+    r, g, b, a = wm.split()
+
+    if mode == "invert":
+        inv = Image.merge("RGB", (ImageOps.invert(r), ImageOps.invert(g), ImageOps.invert(b)))
+        return Image.merge("RGBA", (*inv.split(), a))
+    elif mode == "white":
+        solid = Image.new("RGB", wm.size, (255, 255, 255))
+        return Image.merge("RGBA", (*solid.split(), a))
+    elif mode == "black":
+        solid = Image.new("RGB", wm.size, (0, 0, 0))
+        return Image.merge("RGBA", (*solid.split(), a))
+    else:
+        return wm
 
 
 # -------------------------------
@@ -224,6 +258,8 @@ with st.sidebar:
     wm_opacity_pct = st.slider("Watermark opacity, percent", 0, 100, 70)
     wm_margin_px = st.slider("Margin, px", 0, 200, 24)
 
+    wm_recolor = st.selectbox("Watermark color adjustment", ["none", "invert", "white", "black"], index=0)
+
     st.subheader("Filenames")
     suffix = st.text_input("Output suffix", value="_web")
 
@@ -245,7 +281,7 @@ else:
     sample_name, sample_img = images[0]
     processed_preview = process_one(sample_img, target_long, out_fmt, quality, progressive, optimize,
                                     convert_to_srgb, keep_metadata, wm_img, wm_position, wm_scale_pct,
-                                    wm_opacity_pct, wm_margin_px)
+                                    wm_opacity_pct, wm_margin_px, wm_recolor)
 
     # Compute sizes
     try:
@@ -260,12 +296,12 @@ else:
     c1, c2 = st.columns(2)
     with c1:
         st.caption(f"Original: {sample_name}")
-        st.image(sample_img, use_container_width=True)
+        st.image(sample_img, width='stretch')
         if orig_size:
             st.text(f"Approx original re-encoded size: {orig_size/1024:.1f} KB")
     with c2:
         st.caption(f"Preview output: {filename_with_suffix(sample_name, suffix, out_fmt.lower())}")
-        st.image(processed_preview, use_container_width=True)
+        st.image(processed_preview, width='stretch')
         st.text(f"Estimated output size: {len(out_bytes)/1024:.1f} KB")
         st.download_button(
             label="Download preview",
@@ -286,7 +322,7 @@ if st.button("Process images"):
         for name, img in images:
             out_img = process_one(img, target_long, out_fmt, quality, progressive, optimize,
                                   convert_to_srgb, keep_metadata, wm_img, wm_position, wm_scale_pct,
-                                  wm_opacity_pct, wm_margin_px)
+                                  wm_opacity_pct, wm_margin_px, wm_recolor)
             out_bytes = save_image_bytes(out_img, out_fmt, quality, progressive, optimize, keep_metadata)
             out_name = filename_with_suffix(name, suffix, out_fmt.lower())
             results.append((out_name, out_bytes))
